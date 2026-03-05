@@ -162,7 +162,7 @@ export default function QueueManagement() {
                     </td>
                     <td style={{ fontSize:'13px' }}>{a.package_name}</td>
                     <td style={{ fontSize:'13px', fontWeight:600 }}>{a.appointment_time?.slice(0,5)}</td>
-                    <td><span className="badge badge-success">Paid ✅</span></td>
+                    <td>{a.payment_confirmed ? <span className="badge badge-success">Paid ✅</span> : <span className="badge badge-warning">⏳ Pending</span>}</td>
                     <td>
                       <button className="btn btn-primary btn-sm" onClick={async () => {
                         try {

@@ -83,7 +83,7 @@ const getPackages = async (req, res) => {
 const getDoctors = async (req, res) => {
   try {
     const [doctors] = await db.query(
-      `SELECT u.id, u.name, u.email, u.phone, d.specialization, d.qualification, d.room_number, d.available_from, d.available_to
+      `SELECT u.id, u.name, u.email, u.phone, d.specialization, d.qualification, d.room_number, d.available_from, d.available_to, d.consultation_fee
        FROM users u JOIN doctors d ON u.id = d.user_id WHERE u.role = 'doctor'`
     );
     res.json(doctors);

@@ -34,8 +34,9 @@ const getAppointmentByToken = async (req, res) => {
 };
 
 // Confirm payment and check-in patient
+// Now accepts payment_mode: 'cash' | 'upi' | 'card'
 const confirmPaymentAndCheckIn = async (req, res) => {
-  const { token } = req.body;
+  const { token, payment_mode } = req.body;
   const reception_id = req.user.id;
   try {
     const [appts] = await db.query('SELECT * FROM appointments WHERE token_number = ?', [token.toUpperCase()]);
@@ -50,15 +51,17 @@ const confirmPaymentAndCheckIn = async (req, res) => {
     if (appt.status === 'completed')
       return res.status(400).json({ message: 'This appointment is already completed' });
 
+    // Store payment_mode alongside confirmation
     await db.query(
       `UPDATE appointments SET
         payment_status = 'paid',
         payment_confirmed = 1,
         payment_confirmed_at = NOW(),
         payment_confirmed_by = ?,
+        payment_mode = ?,
         status = 'checked_in'
        WHERE token_number = ?`,
-      [reception_id, token.toUpperCase()]
+      [reception_id, payment_mode || 'cash', token.toUpperCase()]
     );
 
     // Auto assign test rooms
@@ -86,10 +89,10 @@ const confirmPaymentAndCheckIn = async (req, res) => {
       }
       const roomName = roomsToAssign[0]?.name || 'Room 1';
       await db.query('INSERT INTO notifications (user_id, title, message, type) VALUES (?, ?, ?, ?)',
-        [appt.patient_id, 'Payment Confirmed ✅', `Payment confirmed. Please proceed to ${roomName}.`, 'appointment']);
+        [appt.patient_id, 'Payment Confirmed ✅', `Payment confirmed (${payment_mode || 'Cash'}). Please proceed to ${roomName}.`, 'appointment']);
     } else {
       await db.query('INSERT INTO notifications (user_id, title, message, type) VALUES (?, ?, ?, ?)',
-        [appt.patient_id, 'Payment Confirmed ✅', 'Payment confirmed. Please wait in the waiting area for your consultation.', 'appointment']);
+        [appt.patient_id, 'Payment Confirmed ✅', `Payment confirmed (${payment_mode || 'Cash'}). Please wait in the waiting area for your consultation.`, 'appointment']);
     }
 
     const [updated] = await db.query(

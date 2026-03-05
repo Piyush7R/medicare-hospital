@@ -4,35 +4,51 @@ const path = require('path');
 const fs = require('fs');
 const { sendAppointmentEmail } = require('../utils/mailer');
 
+// Max appointments per day
+const MAX_APPOINTMENTS_PER_DAY = 75;
+
+// Get available appointment count for a date (no slot-based, just daily capacity)
 const getAvailableSlots = async (req, res) => {
   const { date, doctor_id } = req.query;
   try {
-    let query = 'SELECT appointment_time FROM appointments WHERE appointment_date = ? AND status != ?';
+    let query = 'SELECT COUNT(*) as booked FROM appointments WHERE appointment_date = ? AND status != ?';
     let params = [date, 'cancelled'];
     if (doctor_id) { query += ' AND doctor_id = ?'; params.push(doctor_id); }
-    const [booked] = await db.query(query, params);
-    const bookedTimes = booked.map(b => b.appointment_time);
-    const slots = [];
-    for (let h = 9; h < 16; h++) {
-      for (let m = 0; m < 60; m += 30) {
-        const time = `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:00`;
-        slots.push({ time, available: !bookedTimes.includes(time) });
-      }
-    }
-    res.json(slots);
+    const [[{ booked }]] = await db.query(query, params);
+    const remaining = Math.max(0, MAX_APPOINTMENTS_PER_DAY - booked);
+    res.json({
+      date,
+      total_capacity: MAX_APPOINTMENTS_PER_DAY,
+      booked,
+      remaining,
+      available: remaining > 0,
+      note: 'Patients must check in by 7:00 AM. Tokens are issued on a first-come, first-served basis.'
+    });
   } catch (err) { res.status(500).json({ message: 'Server error', error: err.message }); }
 };
 
 const bookAppointment = async (req, res) => {
-  const { test_package_id, appointment_date, appointment_time, notes, appointment_type, doctor_id, specialization, patient_note } = req.body;
+  const { test_package_id, appointment_date, notes, appointment_type, doctor_id, specialization, patient_note } = req.body;
+  // appointment_time is no longer used for slot booking — we set a default
   const patient_id = req.user.id;
   try {
-    const [existing] = await db.query(
-      'SELECT id FROM appointments WHERE appointment_date = ? AND appointment_time = ? AND status != ? AND (doctor_id = ? OR (doctor_id IS NULL AND ? IS NULL))',
-      [appointment_date, appointment_time, 'cancelled', doctor_id || null, doctor_id || null]
+    // Check daily capacity
+    const [[{ booked }]] = await db.query(
+      'SELECT COUNT(*) as booked FROM appointments WHERE appointment_date = ? AND status != ?',
+      [appointment_date, 'cancelled']
     );
-    if (existing.length > 0)
-      return res.status(400).json({ message: 'Slot already booked. Please choose another.' });
+    if (booked >= MAX_APPOINTMENTS_PER_DAY) {
+      return res.status(400).json({ message: `Appointments for ${appointment_date} are fully booked (${MAX_APPOINTMENTS_PER_DAY}/day limit). Please choose another date.` });
+    }
+
+    // Check if this patient already has a booking on this date
+    const [existingPatient] = await db.query(
+      'SELECT id FROM appointments WHERE appointment_date = ? AND patient_id = ? AND status != ?',
+      [appointment_date, patient_id, 'cancelled']
+    );
+    if (existingPatient.length > 0) {
+      return res.status(400).json({ message: 'You already have an appointment booked on this date.' });
+    }
 
     let paymentAmount = 0;
     let packageInfo = null;
@@ -41,10 +57,16 @@ const bookAppointment = async (req, res) => {
       packageInfo = packages[0] || null;
       paymentAmount = packageInfo?.price || 0;
     }
+    if ((appointment_type === 'consultation' || !test_package_id) && doctor_id) {
+      const [docFee] = await db.query('SELECT consultation_fee, room_number FROM doctors WHERE user_id = ?', [doctor_id]);
+      paymentAmount = docFee[0]?.consultation_fee || 500;
+    }
 
     const token = 'TKN-' + Date.now().toString().slice(-6);
     const qrCode = uuidv4();
     const type = appointment_type || 'test';
+    // No fixed time slot — patients check in from 7 AM, served on first-come basis
+    const appointment_time = '07:00:00';
 
     const [result] = await db.query(
       `INSERT INTO appointments (patient_id, test_package_id, appointment_date, appointment_time, token_number, qr_code, payment_amount, notes, appointment_type, doctor_id, specialization, patient_note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -53,11 +75,11 @@ const bookAppointment = async (req, res) => {
 
     // Notify in-app
     await db.query('INSERT INTO notifications (user_id, title, message, type) VALUES (?, ?, ?, ?)',
-      [patient_id, 'Appointment Booked', `Your appointment on ${appointment_date} at ${appointment_time} is confirmed. Token: ${token}`, 'appointment']);
+      [patient_id, 'Appointment Booked', `Your appointment on ${appointment_date} is confirmed. Token: ${token}. Please check in by 7:00 AM.`, 'appointment']);
 
     if (doctor_id) {
       await db.query('INSERT INTO notifications (user_id, title, message, type) VALUES (?, ?, ?, ?)',
-        [doctor_id, 'New Consultation Booked', `Patient booked a consultation on ${appointment_date} at ${appointment_time}. Token: ${token}`, 'appointment']);
+        [doctor_id, 'New Consultation Booked', `Patient booked a consultation on ${appointment_date}. Token: ${token}`, 'appointment']);
     }
 
     // Send confirmation email
@@ -189,4 +211,51 @@ const cancelAppointment = async (req, res) => {
   } catch (err) { res.status(500).json({ message: 'Server error', error: err.message }); }
 };
 
-module.exports = { getAvailableSlots, bookAppointment, uploadImage, getMyAppointments, getAllAppointments, getByToken, updateStatus, cancelAppointment };
+// Submit patient feedback after appointment completion
+const submitFeedback = async (req, res) => {
+  const { appointment_id, rating, feedback_text, service_ratings } = req.body;
+  const patient_id = req.user.id;
+  try {
+    // Verify appointment belongs to patient and is completed
+    const [appts] = await db.query(
+      'SELECT * FROM appointments WHERE id = ? AND patient_id = ? AND status = "completed"',
+      [appointment_id, patient_id]
+    );
+    if (appts.length === 0)
+      return res.status(404).json({ message: 'No completed appointment found' });
+
+    // Check if feedback already submitted
+    const [existing] = await db.query('SELECT id FROM feedback WHERE appointment_id = ?', [appointment_id]);
+    if (existing.length > 0)
+      return res.status(400).json({ message: 'Feedback already submitted for this appointment' });
+
+    await db.query(
+      'INSERT INTO feedback (appointment_id, patient_id, rating, feedback_text, service_ratings) VALUES (?, ?, ?, ?, ?)',
+      [appointment_id, patient_id, rating, feedback_text || '', JSON.stringify(service_ratings || {})]
+    );
+    res.status(201).json({ message: 'Thank you for your feedback!' });
+  } catch (err) { res.status(500).json({ message: 'Server error', error: err.message }); }
+};
+
+// Get feedback for a patient's appointments
+const getMyFeedback = async (req, res) => {
+  const patient_id = req.user.id;
+  try {
+    const [feedbacks] = await db.query(
+      `SELECT f.*, a.appointment_date, tp.name as package_name, a.token_number
+       FROM feedback f
+       JOIN appointments a ON f.appointment_id = a.id
+       LEFT JOIN test_packages tp ON a.test_package_id = tp.id
+       WHERE f.patient_id = ?
+       ORDER BY f.created_at DESC`,
+      [patient_id]
+    );
+    res.json(feedbacks);
+  } catch (err) { res.status(500).json({ message: 'Server error', error: err.message }); }
+};
+
+module.exports = {
+  getAvailableSlots, bookAppointment, uploadImage, getMyAppointments,
+  getAllAppointments, getByToken, updateStatus, cancelAppointment,
+  submitFeedback, getMyFeedback
+};
