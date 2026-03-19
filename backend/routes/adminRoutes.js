@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const ctrl = require('../controllers/adminController');
 const { protect, adminOnly } = require('../middleware/authMiddleware');
+const { getTestProgress, startStep, completeStep } = require('../controllers/testProgressController');
 
 // Existing routes
 router.get('/stats',              protect, adminOnly, ctrl.getStats);
@@ -21,5 +22,10 @@ router.get('/analytics/demographics', protect, adminOnly, ctrl.getDemographicAna
 router.get('/analytics/revenue',      protect, adminOnly, ctrl.getRevenueAnalytics);
 router.get('/analytics/feedback',     protect, adminOnly, ctrl.getFeedbackAnalytics);
 router.get('/analytics/realtime',     protect, adminOnly, ctrl.getRealtimeOps);
+
+// Add these routes alongside existing appointment routes:
+router.get('/:id/test-progress',                    protect, adminOnly, getTestProgress);
+router.post('/test-progress/:progressId/start',     protect, adminOnly, startStep);
+router.post('/test-progress/:progressId/complete',  protect, adminOnly, completeStep);
 
 module.exports = router;

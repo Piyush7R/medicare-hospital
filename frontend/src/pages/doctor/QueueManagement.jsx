@@ -1,235 +1,468 @@
-import { useEffect, useState, useRef } from 'react';
-import { useAuth } from '../../context/AuthContext';
+import { useEffect, useState } from 'react';
 import api from '../../utils/api';
 import Layout from '../../components/Layout';
 
+const ROOMS = [
+  { id: 3, name: 'Room 3 – ECG & Cardiac', color: '#e63946' },
+  { id: 4, name: 'Room 4 – Gynaecology', color: '#f77f00' },
+  { id: 5, name: 'Room 5 – Liver / Kidney', color: '#06a77d' },
+  { id: 6, name: 'Room 6 – Blood Collection', color: '#4361ee' },
+  { id: 7, name: 'Room 7 – Radiology', color: '#7209b7' },
+  { id: 8, name: 'Room 8 – Vitals & Specialty', color: '#2a9d8f' },
+];
+
 export default function QueueManagement() {
-  const { user } = useAuth();
-  const [rooms, setRooms] = useState([]);
-  const [selectedRoom, setSelectedRoom] = useState(null);
-  const [roomQueue, setRoomQueue] = useState(null);
-  const [appointments, setAppointments] = useState([]);
-  const [liveStats, setLiveStats] = useState(null);
-  const [tab, setTab] = useState('checkin');
-  const [msg, setMsg] = useState('');
-  const intervalRef = useRef(null);
-  const today = new Date().toISOString().split('T')[0];
+  const [selectedRoomId, setSelectedRoomId] = useState(3);
+  const [roomQueue, setRoomQueue] = useState({ room: null, queue: [] });
+  const [allRooms, setAllRooms] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [completing, setCompleting] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
 
-  const fetchAll = async () => {
-    try {
-      const [roomsRes, statsRes, apptRes] = await Promise.all([
-        api.get('/queue/rooms'),
-        api.get('/queue/live-stats'),
-        api.get(`/appointments/all?date=${today}`),
-      ]);
-      setRooms(roomsRes.data);
-      setLiveStats(statsRes.data);
-      // Only booked + payment confirmed + not yet checked in
-      setAppointments(apptRes.data.filter(a => a.status === 'booked'));
-    } catch (err) { console.error(err); }
-  };
+  useEffect(() => {
+    fetchRoomQueue();
+    fetchAllRooms();
+    const interval = setInterval(() => {
+      fetchRoomQueue();
+      fetchAllRooms();
+    }, 10000); // Refresh every 10 seconds
+    return () => clearInterval(interval);
+  }, [selectedRoomId]);
 
-  const fetchRoomQueue = async (roomId) => {
+  const fetchRoomQueue = async () => {
     try {
-      const res = await api.get(`/queue/room/${roomId}`);
+      const res = await api.get(`/queue/room/${selectedRoomId}`);
       setRoomQueue(res.data);
-    } catch (err) { console.error(err); }
-  };
-
-  useEffect(() => {
-    fetchAll();
-    intervalRef.current = setInterval(fetchAll, 10000);
-    return () => clearInterval(intervalRef.current);
-  }, []);
-
-  useEffect(() => {
-    if (selectedRoom) fetchRoomQueue(selectedRoom);
-  }, [selectedRoom]);
-
-  const handleCompleteTest = async (patient_test_id, patientName) => {
-    if (!confirm(`Mark test complete for ${patientName}?`)) return;
-    try {
-      const res = await api.post('/queue/complete-test', { patient_test_id });
-      setMsg(res.data.allDone ? `✅ All tests done for ${patientName}!` : `✅ ${patientName} moved to next room`);
-      fetchAll();
-      if (selectedRoom) fetchRoomQueue(selectedRoom);
-      setTimeout(() => setMsg(''), 4000);
     } catch (err) {
-      setMsg('❌ ' + (err.response?.data?.message || 'Error'));
+      console.error('Failed to fetch room queue:', err);
     }
   };
 
-  // Get the doctor's own room from their profile
-  const [doctorRoom, setDoctorRoom] = useState(null);
-  useEffect(() => {
-    api.get('/auth/profile').then(res => {
-      setDoctorRoom(res.data?.profile?.room_number);
-    }).catch(() => {});
-  }, []);
+  const fetchAllRooms = async () => {
+    try {
+      const res = await api.get('/queue/rooms');
+      setAllRooms(res.data);
+    } catch (err) {
+      console.error('Failed to fetch all rooms:', err);
+    }
+  };
 
-  // Filter rooms to show doctor's room first, rest after
-  const myRooms = rooms.filter(r => doctorRoom && r.name?.includes(doctorRoom.replace('Room ', '')));
-  const otherRooms = rooms.filter(r => !myRooms.find(m => m.id === r.id));
-  const sortedRooms = [...myRooms, ...otherRooms];
+  const handleCompleteTest = async (patient) => {
+    if (!window.confirm(`Mark ${patient.patient_name}'s test as completed and move to next step?`)) {
+      return;
+    }
+
+    setCompleting(true);
+    setError('');
+    setSuccess('');
+
+    try {
+      const res = await api.post('/queue/complete-test', {
+        appointment_id: patient.appointment_id,
+        // patient_test_id is optional - backend will find current in-progress test
+      });
+
+      if (res.data.message) {
+        setSuccess(res.data.message);
+      }
+
+      // Refresh the queue
+      await fetchRoomQueue();
+      await fetchAllRooms();
+
+      // Clear success message after 3 seconds
+      setTimeout(() => setSuccess(''), 3000);
+    } catch (err) {
+      setError(err.response?.data?.message || 'Failed to complete test');
+      setTimeout(() => setError(''), 5000);
+    } finally {
+      setCompleting(false);
+    }
+  };
+
+  const selectedRoom = ROOMS.find(r => r.id === selectedRoomId);
+  const currentPatient = roomQueue.queue.find(p => p.status === 'in_progress');
+  const waitingPatients = roomQueue.queue.filter(p => p.status === 'waiting');
 
   return (
     <Layout>
-      <div className="page-header">
-        <h2>Queue Manager</h2>
-        <p>Manage patient flow — auto-refreshes every 10 seconds</p>
+      <div style={{ marginBottom: '28px' }}>
+        <div style={{ fontSize: '13px', fontWeight: 600, color: '#4361ee', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '4px' }}>
+          Live Queue
+        </div>
+        <h1 style={{ fontSize: '30px', fontFamily: "'Playfair Display',serif", color: '#1a202c', margin: '0 0 4px' }}>
+          🏥 Queue Management
+        </h1>
+        <p style={{ color: '#718096', margin: 0, fontSize: '14px' }}>
+          Manage patient flow across test rooms
+        </p>
       </div>
 
-      {msg && (
-        <div className={`alert ${msg.startsWith('✅') ? 'alert-success' : 'alert-error'}`} style={{ marginBottom:'16px' }}>{msg}</div>
-      )}
-
-      {/* Live Stats */}
-      {liveStats && (
-        <div className="grid-4" style={{ marginBottom:'24px' }}>
-          {[
-            { icon:'🏥', label:'In Hospital',      value:liveStats.in_hospital,     bg:'#fff8e8', color:'#f0a500' },
-            { icon:'⏳', label:'Awaiting Check-in', value:liveStats.pending_checkin, bg:'#eef3ff', color:'#4361ee' },
-            { icon:'✅', label:'Completed Today',   value:liveStats.completed_today, bg:'#eaf7ef', color:'#2a9d8f' },
-            { icon:'📅', label:'Total Today',       value:liveStats.total_today,     bg:'#e8f5f5', color:'#0a6e6e' },
-          ].map(s => (
-            <div className="stat-card" key={s.label}>
-              <div className="stat-icon" style={{ background:s.bg, color:s.color, fontSize:'24px' }}>{s.icon}</div>
-              <div className="stat-info"><h3 style={{ color:s.color }}>{s.value}</h3><p>{s.label}</p></div>
-            </div>
-          ))}
+      {/* Success/Error Messages */}
+      {success && (
+        <div style={{ 
+          background: '#eaf7ef', 
+          border: '2px solid #2a9d8f', 
+          borderRadius: '12px', 
+          padding: '14px 18px', 
+          color: '#1a6e3c', 
+          fontSize: '14px', 
+          fontWeight: 600, 
+          marginBottom: '20px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '10px'
+        }}>
+          <span style={{ fontSize: '20px' }}>✅</span>
+          {success}
         </div>
       )}
 
-      {/* Room Cards — doctor's room highlighted */}
-      <div className="card" style={{ marginBottom:'24px' }}>
-        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'16px' }}>
-          <h3 style={{ fontSize:'18px' }}>🏥 Live Room Status</h3>
-          {doctorRoom && <span style={{ background:'#e8f5f5', color:'#0a6e6e', padding:'4px 12px', borderRadius:'20px', fontSize:'12px', fontWeight:600 }}>Your room: {doctorRoom}</span>}
+      {error && (
+        <div style={{ 
+          background: '#fff5f5', 
+          border: '2px solid #fed7d7', 
+          borderRadius: '12px', 
+          padding: '14px 18px', 
+          color: '#c53030', 
+          fontSize: '14px', 
+          fontWeight: 600, 
+          marginBottom: '20px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '10px'
+        }}>
+          <span style={{ fontSize: '20px' }}>❌</span>
+          {error}
         </div>
-        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(160px, 1fr))', gap:'12px' }}>
-          {sortedRooms.map(room => {
-            const isMyRoom = myRooms.find(m => m.id === room.id);
-            return (
-              <div
-                key={room.id}
-                onClick={() => { setSelectedRoom(room.id); setTab('queue'); fetchRoomQueue(room.id); }}
-                style={{ border:`2px solid ${selectedRoom===room.id?'#0a6e6e':isMyRoom?'#2a9d8f':'#e2e8f0'}`, background: selectedRoom===room.id?'#f0fafa':isMyRoom?'#f0fffe':'white', borderRadius:'12px', padding:'16px', cursor:'pointer', textAlign:'center', transition:'all 0.2s', position:'relative' }}
-              >
-                {isMyRoom && <div style={{ position:'absolute', top:'-8px', right:'8px', background:'#0a6e6e', color:'white', fontSize:'9px', fontWeight:700, padding:'2px 8px', borderRadius:'20px' }}>YOUR ROOM</div>}
-                <div style={{ fontSize:'24px', marginBottom:'6px' }}>🚪</div>
-                <div style={{ fontWeight:700, fontSize:'12px', marginBottom:'4px' }}>{room.name?.split(' - ')[0]}</div>
-                <div style={{ fontSize:'10px', color:'#718096', marginBottom:'8px' }}>{room.test_type}</div>
-                <div style={{ background: room.waiting_count > 0 ? '#fff3cd' : '#eaf7ef', color: room.waiting_count > 0 ? '#856404' : '#2a9d8f', borderRadius:'20px', padding:'3px 8px', fontSize:'12px', fontWeight:700 }}>
-                  {room.waiting_count} waiting
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
+      )}
 
-      {/* Tabs */}
-      <div style={{ display:'flex', gap:'8px', marginBottom:'20px' }}>
-        {[
-          { id:'checkin', label:'✅ Check-in Patients' },
-          { id:'queue',   label:'📋 Room Queue' },
-        ].map(t => (
-          <button key={t.id} onClick={() => setTab(t.id)} style={{ padding:'10px 20px', border:`2px solid ${tab===t.id?'#0a6e6e':'#e2e8f0'}`, borderRadius:'8px', background:tab===t.id?'#0a6e6e':'white', cursor:'pointer', fontSize:'14px', fontWeight:500, color:tab===t.id?'white':'#718096', transition:'all 0.2s' }}>
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      {/* Check-in Tab */}
-      {tab === 'checkin' && (
-        <div className="card">
-          <h3 style={{ fontSize:'18px', marginBottom:'16px' }}>Patients Ready for Check-in (Payment Confirmed)</h3>
-          {appointments.length === 0 ? (
-            <div style={{ textAlign:'center', padding:'40px', color:'#718096' }}>
-              <div style={{ fontSize:'48px', marginBottom:'12px' }}>✅</div>
-              <p>No patients awaiting check-in</p>
+      <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gap: '24px' }}>
+        {/* Left Sidebar - Room Selection */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          {/* Room Selector */}
+          <div style={{ background: 'white', borderRadius: '16px', padding: '20px', boxShadow: '0 2px 12px rgba(0,0,0,0.05)' }}>
+            <div style={{ fontSize: '12px', fontWeight: 700, color: '#718096', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '16px' }}>
+              Select Room
             </div>
-          ) : (
-            <table>
-              <thead><tr><th>Token</th><th>Patient</th><th>Package</th><th>Time</th><th>Payment</th><th>Action</th></tr></thead>
-              <tbody>
-                {appointments.map(a => (
-                  <tr key={a.id}>
-                    <td><strong style={{ color:'#0a6e6e', fontSize:'13px' }}>{a.token_number}</strong></td>
-                    <td>
-                      <div style={{ fontWeight:600 }}>{a.patient_name}</div>
-                      <div style={{ color:'#718096', fontSize:'12px' }}>{a.gender && `${a.gender}, `}{a.age && `${a.age} yrs`}</div>
-                    </td>
-                    <td style={{ fontSize:'13px' }}>{a.package_name}</td>
-                    <td style={{ fontSize:'13px', fontWeight:600 }}>{a.appointment_time?.slice(0,5)}</td>
-                    <td>{a.payment_confirmed ? <span className="badge badge-success">Paid ✅</span> : <span className="badge badge-warning">⏳ Pending</span>}</td>
-                    <td>
-                      <button className="btn btn-primary btn-sm" onClick={async () => {
-                        try {
-                          await api.post('/queue/checkin', { appointment_id: a.id });
-                          setMsg('✅ Patient checked in!');
-                          fetchAll();
-                          setTimeout(() => setMsg(''), 3000);
-                        } catch (err) { setMsg('❌ ' + (err.response?.data?.message || 'Error')); }
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {ROOMS.map(room => {
+                const roomData = allRooms.find(r => r.id === room.id);
+                const waitingCount = roomData?.waiting_count || 0;
+                const inProgressCount = roomData?.in_progress_count || 0;
+
+                return (
+                  <div
+                    key={room.id}
+                    onClick={() => setSelectedRoomId(room.id)}
+                    style={{
+                      padding: '14px 16px',
+                      border: `2px solid ${selectedRoomId === room.id ? room.color : '#e2e8f0'}`,
+                      borderRadius: '12px',
+                      cursor: 'pointer',
+                      background: selectedRoomId === room.id ? `${room.color}10` : 'white',
+                      transition: 'all 0.2s',
+                    }}
+                  >
+                    <div style={{ 
+                      fontWeight: 700, 
+                      fontSize: '14px', 
+                      color: selectedRoomId === room.id ? room.color : '#1a202c',
+                      marginBottom: '6px'
+                    }}>
+                      {room.name}
+                    </div>
+                    <div style={{ display: 'flex', gap: '8px', fontSize: '12px' }}>
+                      <span style={{ 
+                        background: '#fff8e8', 
+                        color: '#b86e00', 
+                        padding: '2px 8px', 
+                        borderRadius: '20px', 
+                        fontWeight: 600 
                       }}>
-                        Assign Rooms
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
-      )}
-
-      {/* Room Queue Tab */}
-      {tab === 'queue' && (
-        <div className="card">
-          {!selectedRoom ? (
-            <div style={{ textAlign:'center', padding:'40px', color:'#718096' }}>
-              <p>Click a room above to see its queue</p>
-            </div>
-          ) : !roomQueue ? (
-            <div style={{ textAlign:'center', padding:'40px' }}>Loading queue...</div>
-          ) : (
-            <>
-              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'20px' }}>
-                <h3 style={{ fontSize:'18px' }}>Queue — {roomQueue.room?.name}</h3>
-                <span style={{ background:'#e8f5f5', color:'#0a6e6e', padding:'4px 12px', borderRadius:'20px', fontSize:'13px', fontWeight:600 }}>
-                  {roomQueue.queue?.length || 0} in queue
-                </span>
-              </div>
-              {roomQueue.queue?.length === 0 ? (
-                <div style={{ textAlign:'center', padding:'40px', color:'#718096' }}>
-                  <div style={{ fontSize:'48px', marginBottom:'12px' }}>🎉</div>
-                  <p>Queue is empty for this room</p>
-                </div>
-              ) : (
-                <div style={{ display:'flex', flexDirection:'column', gap:'12px' }}>
-                  {roomQueue.queue.map((q, idx) => (
-                    <div key={q.id} style={{ display:'flex', alignItems:'center', gap:'16px', padding:'16px', background:idx===0?'#f0fafa':'#f7fafc', borderRadius:'12px', border:idx===0?'2px solid #0a6e6e':'1px solid #e2e8f0' }}>
-                      <div style={{ width:'48px', height:'48px', background:idx===0?'#0a6e6e':'#e2e8f0', borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', color:idx===0?'white':'#718096', fontWeight:700, fontSize:'20px', flexShrink:0 }}>
-                        #{q.position}
-                      </div>
-                      <div style={{ flex:1 }}>
-                        <div style={{ fontWeight:600, fontSize:'15px' }}>{q.patient_name}</div>
-                        <div style={{ color:'#718096', fontSize:'13px' }}>Token: {q.token_number} | {q.package_name}</div>
-                        <div style={{ color:'#718096', fontSize:'12px' }}>Time: {q.appointment_time?.slice(0,5)}</div>
-                      </div>
-                      {idx === 0 && (
-                        <button className="btn btn-primary btn-sm" onClick={() => handleCompleteTest(q.id, q.patient_name)}>
-                          ✓ Complete & Next
-                        </button>
+                        {waitingCount} waiting
+                      </span>
+                      {inProgressCount > 0 && (
+                        <span style={{ 
+                          background: '#f0f2ff', 
+                          color: '#4361ee', 
+                          padding: '2px 8px', 
+                          borderRadius: '20px', 
+                          fontWeight: 600 
+                        }}>
+                          {inProgressCount} in progress
+                        </span>
                       )}
                     </div>
-                  ))}
-                </div>
-              )}
-            </>
-          )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         </div>
-      )}
+
+        {/* Main Content - Queue */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+          {/* Room Header */}
+          <div style={{ 
+            background: `linear-gradient(135deg, ${selectedRoom?.color}, ${selectedRoom?.color}dd)`, 
+            borderRadius: '16px', 
+            padding: '24px 28px',
+            color: 'white'
+          }}>
+            <div style={{ fontSize: '14px', opacity: 0.9, marginBottom: '4px' }}>Currently Viewing</div>
+            <h2 style={{ fontSize: '26px', margin: '0 0 8px', fontWeight: 800 }}>{selectedRoom?.name}</h2>
+            <div style={{ fontSize: '14px', opacity: 0.85 }}>
+              {waitingPatients.length} patients in queue
+              {currentPatient && ' · 1 in progress'}
+            </div>
+          </div>
+
+          {/* Current Patient (In Progress) */}
+          {currentPatient && (
+            <div style={{ 
+              background: 'linear-gradient(135deg, #eaf7ef, #d4f4ea)', 
+              borderRadius: '16px', 
+              padding: '24px 28px',
+              border: '3px solid #2a9d8f'
+            }}>
+              <div style={{ 
+                fontSize: '12px', 
+                fontWeight: 700, 
+                color: '#1a6e3c', 
+                textTransform: 'uppercase', 
+                letterSpacing: '1px', 
+                marginBottom: '14px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px'
+              }}>
+                <div style={{ 
+                  width: '8px', 
+                  height: '8px', 
+                  background: '#2a9d8f', 
+                  borderRadius: '50%',
+                  animation: 'pulse 2s infinite'
+                }} />
+                Currently In Service
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '14px', marginBottom: '12px' }}>
+                    <div style={{ 
+                      width: '56px', 
+                      height: '56px', 
+                      background: 'linear-gradient(135deg, #2a9d8f, #0a6e6e)', 
+                      borderRadius: '50%', 
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      justifyContent: 'center', 
+                      color: 'white', 
+                      fontSize: '24px', 
+                      fontWeight: 800,
+                      flexShrink: 0
+                    }}>
+                      {currentPatient.patient_name?.[0]}
+                    </div>
+                    <div>
+                      <div style={{ fontSize: '20px', fontWeight: 800, color: '#1a202c', marginBottom: '2px' }}>
+                        {currentPatient.patient_name}
+                      </div>
+                      <div style={{ color: '#718096', fontSize: '13px' }}>
+                        Token: <span style={{ 
+                          background: '#0a6e6e', 
+                          color: 'white', 
+                          padding: '2px 10px', 
+                          borderRadius: '20px', 
+                          fontWeight: 700,
+                          fontSize: '12px'
+                        }}>
+                          {currentPatient.token_number}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{ 
+                    background: 'white', 
+                    borderRadius: '10px', 
+                    padding: '12px 16px', 
+                    fontSize: '13px',
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(2, 1fr)',
+                    gap: '8px'
+                  }}>
+                    <div>
+                      <span style={{ color: '#a0aec0', fontSize: '11px', textTransform: 'uppercase', display: 'block', marginBottom: '2px' }}>
+                        Package
+                      </span>
+                      <strong style={{ color: '#1a202c' }}>
+                        {currentPatient.package_name || 'Consultation'}
+                      </strong>
+                    </div>
+                    <div>
+                      <span style={{ color: '#a0aec0', fontSize: '11px', textTransform: 'uppercase', display: 'block', marginBottom: '2px' }}>
+                        Time
+                      </span>
+                      <strong style={{ color: '#1a202c' }}>
+                        {currentPatient.appointment_time || '07:00'}
+                      </strong>
+                    </div>
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => handleCompleteTest(currentPatient)}
+                  disabled={completing}
+                  style={{
+                    padding: '14px 28px',
+                    background: completing ? '#a0aec0' : 'linear-gradient(135deg, #2a9d8f, #0a6e6e)',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '12px',
+                    fontSize: '15px',
+                    fontWeight: 700,
+                    cursor: completing ? 'not-allowed' : 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    transition: 'all 0.2s',
+                    marginLeft: '20px'
+                  }}
+                >
+                  <span style={{ fontSize: '18px' }}>✅</span>
+                  {completing ? 'Processing...' : 'Complete & Next'}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Waiting Queue */}
+          <div style={{ background: 'white', borderRadius: '16px', padding: '24px 28px', boxShadow: '0 2px 12px rgba(0,0,0,0.05)' }}>
+            <div style={{ 
+              display: 'flex', 
+              justifyContent: 'space-between', 
+              alignItems: 'center', 
+              marginBottom: '20px',
+              paddingBottom: '16px',
+              borderBottom: '2px solid #f0f4f8'
+            }}>
+              <div>
+                <div style={{ fontSize: '12px', fontWeight: 700, color: '#718096', textTransform: 'uppercase', letterSpacing: '1px' }}>
+                  Waiting Queue
+                </div>
+                <div style={{ fontSize: '20px', fontWeight: 800, color: '#1a202c', marginTop: '4px' }}>
+                  {waitingPatients.length} Patient{waitingPatients.length !== 1 ? 's' : ''}
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  fetchRoomQueue();
+                  fetchAllRooms();
+                }}
+                style={{
+                  padding: '10px 18px',
+                  background: '#f0f2ff',
+                  border: '2px solid #4361ee',
+                  borderRadius: '10px',
+                  color: '#4361ee',
+                  fontWeight: 700,
+                  fontSize: '14px',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px'
+                }}
+              >
+                <span>🔄</span> Refresh
+              </button>
+            </div>
+
+            {waitingPatients.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '60px 20px', color: '#a0aec0' }}>
+                <div style={{ fontSize: '56px', marginBottom: '12px', opacity: 0.3 }}>👥</div>
+                <p style={{ fontSize: '15px', margin: 0 }}>No patients waiting in queue</p>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                {waitingPatients.map((patient, index) => (
+                  <div
+                    key={patient.id}
+                    style={{
+                      padding: '16px 20px',
+                      background: '#f8fafc',
+                      borderRadius: '12px',
+                      border: '2px solid #e2e8f0',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '16px',
+                      transition: 'all 0.2s'
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.borderColor = selectedRoom?.color;
+                      e.currentTarget.style.background = 'white';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.borderColor = '#e2e8f0';
+                      e.currentTarget.style.background = '#f8fafc';
+                    }}
+                  >
+                    {/* Position Badge */}
+                    <div style={{
+                      width: '40px',
+                      height: '40px',
+                      background: `linear-gradient(135deg, ${selectedRoom?.color}, ${selectedRoom?.color}dd)`,
+                      borderRadius: '50%',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      color: 'white',
+                      fontWeight: 800,
+                      fontSize: '18px',
+                      flexShrink: 0
+                    }}>
+                      #{index + 1}
+                    </div>
+
+                    {/* Patient Info */}
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 700, fontSize: '16px', color: '#1a202c', marginBottom: '4px' }}>
+                        {patient.patient_name}
+                      </div>
+                      <div style={{ color: '#718096', fontSize: '13px' }}>
+                        {patient.package_name || 'Consultation'} · Token: {patient.token_number}
+                      </div>
+                    </div>
+
+                    {/* Status Badge */}
+                    <div style={{
+                      background: '#fff8e8',
+                      color: '#b86e00',
+                      padding: '6px 14px',
+                      borderRadius: '20px',
+                      fontSize: '12px',
+                      fontWeight: 700,
+                      flexShrink: 0
+                    }}>
+                      Waiting
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Add pulse animation */}
+      <style>{`
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.5; }
+        }
+      `}</style>
     </Layout>
   );
 }

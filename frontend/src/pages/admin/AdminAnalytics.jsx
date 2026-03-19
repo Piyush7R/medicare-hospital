@@ -20,7 +20,7 @@ function KPICard({ icon, label, value, bg, color }) {
 
 function Card({ title, children, style = {} }) {
   return (
-    <div style={{ background: 'white', borderRadius: 16, padding: 24, boxShadow: '0 2px 12px rgba(0,0,0,0.05)', ...style }}>
+    <div style={{ background: 'white', borderRadius: 16, padding: 24, boxShadow: '0 2px 12px rgba(0,0,0,0.05)', minWidth: 0, overflow: 'hidden', ...style }}>
       {title && <h3 style={{ margin: '0 0 20px', fontSize: 15, fontWeight: 700, color: '#1a202c' }}>{title}</h3>}
       {children}
     </div>
@@ -69,11 +69,12 @@ export default function AdminAnalytics() {
   const { bookings = {}, packages = [], demographics = {}, revenue = {}, feedback = {}, realtime = {} } = data;
 
   // Prepare chart-ready data
-  const dailyBookingData = (bookings.daily_bookings || []).map(d => ({
-    date: new Date(d.appointment_date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }),
-    Bookings: d.total,
-    Cancelled: d.cancelled || 0,
-  }));
+  const dailyBookingData = (bookings.daily_bookings || []).map(d => {
+    // Parse as local date (YYYY-MM-DD) to avoid UTC midnight shifting to previous day
+    const [y, m, day] = d.appointment_date.split('-');
+    const label = new Date(+y, +m - 1, +day).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
+    return { date: label, Bookings: d.total, Cancelled: d.cancelled || 0 };
+  });
 
   const monthlyRevenueData = (revenue.monthly_revenue || []).map(m => ({
     month: m.month?.slice(5) || m.month,
@@ -96,11 +97,14 @@ export default function AdminAnalytics() {
     Bookings: d.total,
   }));
 
-  const packageBarData = (packages || []).slice(0, 8).map(p => ({
-    name: p.name?.length > 12 ? p.name.slice(0, 12) + '…' : p.name,
+  const packageBarData = (packages || []).map(p => ({
+    name: p.name || '',
     Revenue: parseFloat(p.revenue) || 0,
     Bookings: p.total_bookings || 0,
   }));
+
+  // Y-axis width: enough to fit longest package name
+  const pkgYAxisWidth = Math.min(220, Math.max(120, Math.max(...(packageBarData.map(p => (p.name?.length || 0) * 7)), 120)));
 
   const ageData = (demographics.age_groups || []).map(g => ({
     name: g.age_group,
@@ -124,6 +128,7 @@ export default function AdminAnalytics() {
 
   return (
     <Layout>
+      <div style={{ minWidth: 0, width: '100%', overflowX: 'hidden' }}>
       {/* Header */}
       <div style={{ marginBottom: 24 }}>
         <div style={{ fontSize: 13, fontWeight: 600, color: '#e63946', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 4 }}>Admin</div>
@@ -166,14 +171,14 @@ export default function AdminAnalytics() {
             <span style={{ fontSize: 13, color: '#718096', fontWeight: 600 }}>Live — refreshes every 30s</span>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 14, marginBottom: 24 }}>
+          <div style={{ display: 'grid', minWidth: 0, gridTemplateColumns: 'repeat(4,1fr)', gap: 14, marginBottom: 24 }}>
             <KPICard icon="🏥" label="Checked-In Today"  value={realtime.checked_in_today || 0} bg="#fff8e8" color="#f0a500" />
             <KPICard icon="✅" label="Completed Today"   value={realtime.completed_today || 0}  bg="#eaf7ef" color="#2a9d8f" />
             <KPICard icon="⏳" label="Pending Arrival"   value={realtime.pending_today || 0}    bg="#eef3ff" color="#4361ee" />
             <KPICard icon="💰" label="Today's Revenue"  value={`₹${realtime.revenue_today || 0}`} bg="#e8f5f5" color="#0a6e6e" />
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
+          <div style={{ display: 'grid', minWidth: 0, gridTemplateColumns: '1fr 1fr', gap: 20 }}>
             <Card title="Room Queue Status">
               {!(realtime.room_status?.length) ? <p style={{ color: '#a0aec0' }}>No active rooms</p> : (
                 <ResponsiveContainer width="100%" height={220}>
@@ -219,42 +224,65 @@ export default function AdminAnalytics() {
       {/* ── BOOKINGS ── */}
       {!loading && tab === 'bookings' && (
         <>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 14, marginBottom: 24 }}>
+          <div style={{ display: 'grid', minWidth: 0, gridTemplateColumns: 'repeat(4,1fr)', gap: 14, marginBottom: 24 }}>
             <KPICard icon="📅" label="Total Bookings"    value={bookings.total_appts || 0}           bg="#eef3ff" color="#4361ee" />
             <KPICard icon="❌" label="Cancelled"         value={bookings.total_cancelled || 0}        bg="#fff5f5" color="#e63946" />
             <KPICard icon="📊" label="Cancellation Rate" value={`${bookings.cancellation_rate || 0}%`} bg="#fff8e8" color="#f0a500" />
             <KPICard icon="🧪" label="Active Packages"   value={bookings.package_trends?.length || 0} bg="#e8f5f5" color="#0a6e6e" />
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 20, marginBottom: 20 }}>
+          <div style={{ display: 'grid', minWidth: 0, gridTemplateColumns: '3fr 2fr', gap: 20, marginBottom: 20 }}>
             <Card title="Daily Booking Trend">
-              <ResponsiveContainer width="100%" height={240}>
-                <LineChart data={dailyBookingData}>
+              <ResponsiveContainer width="100%" height={260}>
+                <LineChart data={dailyBookingData} margin={{ top: 5, right: 10, left: 0, bottom: 50 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#f0f4f8" />
-                  <XAxis dataKey="date" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
-                  <YAxis tick={{ fontSize: 11 }} />
-                  <Tooltip />
-                  <Legend />
-                  <Line type="monotone" dataKey="Bookings" stroke="#0a6e6e" strokeWidth={2.5} dot={{ r: 3 }} activeDot={{ r: 5 }} />
-                  <Line type="monotone" dataKey="Cancelled" stroke="#e63946" strokeWidth={2} strokeDasharray="4 4" dot={{ r: 2 }} />
+                  <XAxis
+                    dataKey="date"
+                    tick={{ fontSize: 11, fill: '#718096' }}
+                    interval={period === '7' ? 0 : period === '30' ? 4 : 9}
+                    angle={-40}
+                    textAnchor="end"
+                    height={60}
+                  />
+                  <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
+                  <Tooltip
+                    contentStyle={{ borderRadius: 8, border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)', fontSize: 13 }}
+                    labelStyle={{ fontWeight: 700, color: '#1a202c' }}
+                  />
+                  <Legend verticalAlign="top" align="right" wrapperStyle={{ fontSize: 12, paddingBottom: 8 }} />
+                  <Line type="monotone" dataKey="Bookings"  stroke="#0a6e6e" strokeWidth={2.5} dot={{ r: 3, fill: '#0a6e6e' }} activeDot={{ r: 5 }} />
+                  <Line type="monotone" dataKey="Cancelled" stroke="#e63946" strokeWidth={2}   strokeDasharray="4 4" dot={{ r: 2, fill: '#e63946' }} />
                 </LineChart>
               </ResponsiveContainer>
             </Card>
 
             <Card title="Package Popularity">
               <ResponsiveContainer width="100%" height={240}>
-                <PieChart>
-                  <Pie data={packagePieData} cx="50%" cy="50%" innerRadius={55} outerRadius={90} paddingAngle={3} dataKey="value">
+                <PieChart margin={{ top: 0, right: 0, left: 0, bottom: 0 }}>
+                  <Pie
+                    data={packagePieData}
+                    cx="50%" cy="42%"
+                    innerRadius={40} outerRadius={75}
+                    paddingAngle={3}
+                    dataKey="value"
+                  >
                     {packagePieData.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
                   </Pie>
                   <Tooltip formatter={(v, n) => [v, n]} />
-                  <Legend iconType="circle" iconSize={10} />
+                  <Legend
+                    iconType="circle"
+                    iconSize={8}
+                    layout="horizontal"
+                    verticalAlign="bottom"
+                    align="center"
+                    wrapperStyle={{ fontSize: 10, paddingTop: 6 }}
+                  />
                 </PieChart>
               </ResponsiveContainer>
             </Card>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
+          <div style={{ display: 'grid', minWidth: 0, gridTemplateColumns: '1fr 1fr', gap: 20 }}>
             <Card title="Peak Booking Days">
               <ResponsiveContainer width="100%" height={200}>
                 <BarChart data={peakDaysData}>
@@ -285,62 +313,111 @@ export default function AdminAnalytics() {
       {/* ── PACKAGES ── */}
       {!loading && tab === 'packages' && (
         <>
-          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 20, marginBottom: 20 }}>
-            <Card title="Package-wise Revenue (₹)">
-              <ResponsiveContainer width="100%" height={280}>
-                <BarChart data={packageBarData} layout="vertical">
-                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f4f8" />
-                  <XAxis type="number" tick={{ fontSize: 11 }} />
-                  <YAxis type="category" dataKey="name" width={100} tick={{ fontSize: 11 }} />
-                  <Tooltip formatter={v => [`₹${v}`, 'Revenue']} />
-                  <Bar dataKey="Revenue" fill="#6b21a8" radius={[0,6,6,0]} />
+          {/* Full-width bar chart — no side-by-side so labels never truncate */}
+          <Card title="Package-wise Revenue (₹)" style={{ marginBottom: 20 }}>
+            <ResponsiveContainer width="100%" height={Math.max(300, packageBarData.length * 48)}>
+              <BarChart
+                data={packageBarData}
+                layout="vertical"
+                margin={{ top: 4, right: 40, left: 8, bottom: 4 }}
+              >
+                <CartesianGrid strokeDasharray="3 3" stroke="#f0f4f8" horizontal={false} />
+                <XAxis
+                  type="number"
+                  tick={{ fontSize: 12 }}
+                  tickFormatter={v => v >= 1000 ? `₹${(v/1000).toFixed(0)}k` : `₹${v}`}
+                />
+                <YAxis
+                  type="category"
+                  dataKey="name"
+                  width={pkgYAxisWidth}
+                  tick={{ fontSize: 12, fill: '#4a5568' }}
+                />
+                <Tooltip
+                  formatter={v => [`₹${Number(v).toLocaleString()}`, 'Revenue']}
+                  contentStyle={{ borderRadius: 10, border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
+                />
+                <Bar dataKey="Revenue" fill="#6b21a8" radius={[0, 8, 8, 0]} maxBarSize={32}>
+                  {packageBarData.map((entry, i) => (
+                    <Cell key={i} fill={COLORS[i % COLORS.length]} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </Card>
+
+          {/* Bookings bar + table side by side */}
+          <div style={{ display: 'grid', minWidth: 0, gridTemplateColumns: '1fr 1fr', gap: 20, marginBottom: 20, alignItems: 'start' }}>
+
+            <Card title="Bookings per Package">
+              <ResponsiveContainer width="100%" height={Math.max(280, packageBarData.length * 40)}>
+                <BarChart
+                  data={packageBarData.map(p => ({ name: p.name, Bookings: p.Bookings }))}
+                  layout="vertical"
+                  margin={{ top: 4, right: 40, left: 8, bottom: 4 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f4f8" horizontal={false} />
+                  <XAxis
+                    type="number"
+                    allowDecimals={false}
+                    tick={{ fontSize: 12 }}
+                  />
+                  <YAxis
+                    type="category"
+                    dataKey="name"
+                    width={pkgYAxisWidth}
+                    tick={{ fontSize: 12, fill: '#4a5568' }}
+                  />
+                  <Tooltip
+                    contentStyle={{ borderRadius: 10, border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
+                    formatter={v => [v, 'Bookings']}
+                  />
+                  <Bar dataKey="Bookings" radius={[0, 8, 8, 0]} maxBarSize={28}>
+                    {packageBarData.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
+                  </Bar>
                 </BarChart>
               </ResponsiveContainer>
             </Card>
 
-            <Card title="Bookings per Package">
-              <ResponsiveContainer width="100%" height={280}>
-                <PieChart>
-                  <Pie data={packageBarData.map(p => ({ name: p.name, value: p.Bookings }))} cx="50%" cy="50%" outerRadius={100} dataKey="value">
-                    {packageBarData.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
-                  </Pie>
-                  <Tooltip />
-                  <Legend iconType="circle" iconSize={10} />
-                </PieChart>
-              </ResponsiveContainer>
+            <Card title="Package Performance Table">
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 420 }}>
+                  <thead>
+                    <tr>
+                      {['Package', 'Price', 'Bookings', 'Revenue', 'Completed', 'Avg Time'].map(h => (
+                        <th key={h} style={{ padding: '9px 12px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: '#a0aec0', textTransform: 'uppercase', borderBottom: '2px solid #f0f4f8', whiteSpace: 'nowrap' }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(packages || []).map((p, i) => (
+                      <tr key={i} onMouseEnter={e => e.currentTarget.style.background='#fdf8ff'} onMouseLeave={e => e.currentTarget.style.background=''}>
+                        <td style={{ padding: '11px 12px', fontWeight: 700, fontSize: 13 }}>{p.name}</td>
+                        <td style={{ padding: '11px 12px', whiteSpace: 'nowrap', fontSize: 13 }}>₹{p.price}</td>
+                        <td style={{ padding: '11px 12px' }}>
+                          <span style={{ background: '#f3e8ff', color: '#6b21a8', padding: '3px 10px', borderRadius: 20, fontSize: 12, fontWeight: 700 }}>{p.total_bookings || 0}</span>
+                        </td>
+                        <td style={{ padding: '11px 12px', fontWeight: 700, color: '#1a6e3c', whiteSpace: 'nowrap' }}>₹{p.revenue || 0}</td>
+                        <td style={{ padding: '11px 12px' }}>
+                          <span style={{ background: '#eaf7ef', color: '#2a9d8f', padding: '3px 10px', borderRadius: 20, fontSize: 12, fontWeight: 700 }}>{p.completed || 0}</span>
+                        </td>
+                        <td style={{ padding: '11px 12px', color: '#718096', whiteSpace: 'nowrap', fontSize: 13 }}>
+                          {p.avg_completion_minutes ? `${Math.round(p.avg_completion_minutes)} min` : '—'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </Card>
           </div>
-
-          <Card title="Package Performance Table">
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead>
-                <tr>
-                  {['Package', 'Price', 'Bookings', 'Revenue', 'Completed', 'Avg Completion'].map(h => (
-                    <th key={h} style={{ padding: '10px 12px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: '#a0aec0', textTransform: 'uppercase', borderBottom: '2px solid #f0f4f8' }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {(packages || []).map((p, i) => (
-                  <tr key={i} onMouseEnter={e => e.currentTarget.style.background='#fdf8ff'} onMouseLeave={e => e.currentTarget.style.background=''}>
-                    <td style={{ padding: '12px', fontWeight: 700 }}>{p.name}</td>
-                    <td style={{ padding: '12px' }}>₹{p.price}</td>
-                    <td style={{ padding: '12px' }}><span style={{ background: '#f3e8ff', color: '#6b21a8', padding: '3px 10px', borderRadius: 20, fontSize: 12, fontWeight: 700 }}>{p.total_bookings || 0}</span></td>
-                    <td style={{ padding: '12px', fontWeight: 700, color: '#1a6e3c' }}>₹{p.revenue || 0}</td>
-                    <td style={{ padding: '12px' }}><span style={{ background: '#eaf7ef', color: '#2a9d8f', padding: '3px 10px', borderRadius: 20, fontSize: 12, fontWeight: 700 }}>{p.completed || 0}</span></td>
-                    <td style={{ padding: '12px', color: '#718096' }}>{p.avg_completion_minutes ? `${Math.round(p.avg_completion_minutes)} min` : '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </Card>
         </>
       )}
 
       {/* ── DEMOGRAPHICS ── */}
       {!loading && tab === 'demographics' && (
         <>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 20, marginBottom: 20 }}>
+          <div style={{ display: 'grid', minWidth: 0, gridTemplateColumns: '1fr 1fr 1fr', gap: 20, marginBottom: 20 }}>
             <Card title="Age Group Distribution">
               <ResponsiveContainer width="100%" height={220}>
                 <BarChart data={ageData}>
@@ -355,11 +432,16 @@ export default function AdminAnalytics() {
 
             <Card title="Gender Distribution">
               <ResponsiveContainer width="100%" height={220}>
-                <PieChart>
-                  <Pie data={genderPieData} cx="50%" cy="50%" outerRadius={85} dataKey="value" label={({ name, percent }) => `${name} ${(percent*100).toFixed(0)}%`}>
+                <PieChart margin={{ top: 0, right: 0, left: 0, bottom: 0 }}>
+                  <Pie data={genderPieData} cx="50%" cy="42%" outerRadius={70} dataKey="value">
                     {genderPieData.map((_, i) => <Cell key={i} fill={['#0a6e6e','#e76f51','#4361ee'][i % 3]} />)}
                   </Pie>
-                  <Tooltip />
+                  <Tooltip formatter={(v, name) => [v, name]} />
+                  <Legend
+                    iconType="circle" iconSize={8}
+                    layout="horizontal" verticalAlign="bottom" align="center"
+                    wrapperStyle={{ fontSize: 11 }}
+                  />
                 </PieChart>
               </ResponsiveContainer>
             </Card>
@@ -406,20 +488,23 @@ export default function AdminAnalytics() {
       {/* ── REVENUE ── */}
       {!loading && tab === 'revenue' && (
         <>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 14, marginBottom: 24 }}>
+          <div style={{ display: 'grid', minWidth: 0, gridTemplateColumns: 'repeat(3,1fr)', gap: 14, marginBottom: 24 }}>
             <KPICard icon="💰" label="Total Revenue"      value={`₹${Math.round(revenue.summary?.total_revenue || 0).toLocaleString()}`} bg="#eaf7ef" color="#1a6e3c" />
             <KPICard icon="🧾" label="Total Transactions" value={revenue.summary?.total_transactions || 0} bg="#e8f5f5" color="#0a6e6e" />
             <KPICard icon="📈" label="Avg Transaction"    value={`₹${Math.round(revenue.summary?.avg_transaction || 0)}`} bg="#eef3ff" color="#4361ee" />
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 20, marginBottom: 20 }}>
+          <div style={{ display: 'grid', minWidth: 0, gridTemplateColumns: '3fr 2fr', gap: 20, marginBottom: 20 }}>
             <Card title="Revenue Trends (₹)">
               <ResponsiveContainer width="100%" height={240}>
-                <LineChart data={monthlyRevenueData}>
+                <LineChart data={monthlyRevenueData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#f0f4f8" />
-                  <XAxis dataKey="month" tick={{ fontSize: 12 }} />
+                  <XAxis dataKey="month" tick={{ fontSize: 12, fill: '#718096' }} interval={0} />
                   <YAxis tick={{ fontSize: 11 }} tickFormatter={v => `₹${(v/1000).toFixed(0)}k`} />
-                  <Tooltip formatter={v => [`₹${v.toLocaleString()}`, 'Revenue']} />
+                  <Tooltip
+                    contentStyle={{ borderRadius: 8, border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)', fontSize: 13 }}
+                    formatter={v => [`₹${v.toLocaleString()}`, 'Revenue']}
+                  />
                   <Line type="monotone" dataKey="Revenue" stroke="#0a6e6e" strokeWidth={2.5} dot={{ r: 4, fill: '#0a6e6e' }} activeDot={{ r: 6 }} />
                 </LineChart>
               </ResponsiveContainer>
@@ -427,27 +512,48 @@ export default function AdminAnalytics() {
 
             <Card title="Payment Mode Split">
               <ResponsiveContainer width="100%" height={240}>
-                <PieChart>
-                  <Pie data={paymentModeData} cx="50%" cy="50%" innerRadius={50} outerRadius={90} paddingAngle={4} dataKey="value"
-                    label={({ name, percent }) => `${name} ${(percent*100).toFixed(0)}%`}>
+                <PieChart margin={{ top: 0, right: 0, left: 0, bottom: 0 }}>
+                  <Pie
+                    data={paymentModeData}
+                    cx="50%" cy="45%"
+                    innerRadius={45} outerRadius={75}
+                    paddingAngle={4}
+                    dataKey="value"
+                  >
                     <Cell fill="#2a9d8f" />
                     <Cell fill="#4361ee" />
                     <Cell fill="#6b21a8" />
                   </Pie>
                   <Tooltip formatter={(v, n, p) => [`${v} txns · ₹${p.payload.amount}`, p.payload.name]} />
+                  <Legend
+                    iconType="circle"
+                    iconSize={8}
+                    layout="horizontal"
+                    verticalAlign="bottom"
+                    align="center"
+                    wrapperStyle={{ fontSize: 11 }}
+                    formatter={(value) => value.toUpperCase()}
+                  />
                 </PieChart>
               </ResponsiveContainer>
             </Card>
           </div>
 
           <Card title="Package-wise Revenue Contribution">
-            <ResponsiveContainer width="100%" height={220}>
-              <BarChart data={(revenue.package_revenue || []).map(p => ({ name: p.name?.length > 14 ? p.name.slice(0,14)+'…' : p.name, Revenue: parseFloat(p.revenue)||0 }))}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#f0f4f8" />
-                <XAxis dataKey="name" tick={{ fontSize: 11 }} />
-                <YAxis tick={{ fontSize: 11 }} tickFormatter={v => `₹${(v/1000).toFixed(0)}k`} />
-                <Tooltip formatter={v => [`₹${v.toLocaleString()}`, 'Revenue']} />
-                <Bar dataKey="Revenue" radius={[6,6,0,0]}>
+            <ResponsiveContainer width="100%" height={Math.max(260, (revenue.package_revenue || []).length * 40)}>
+              <BarChart
+                data={(revenue.package_revenue || []).map(p => ({
+                  name: p.name?.length > 22 ? p.name.slice(0,22)+'…' : p.name,
+                  Revenue: parseFloat(p.revenue)||0
+                }))}
+                layout="vertical"
+                margin={{ top: 4, right: 50, left: 8, bottom: 4 }}
+              >
+                <CartesianGrid strokeDasharray="3 3" stroke="#f0f4f8" horizontal={false} />
+                <XAxis type="number" tick={{ fontSize: 11 }} tickFormatter={v => `₹${(v/1000).toFixed(0)}k`} />
+                <YAxis type="category" dataKey="name" width={160} tick={{ fontSize: 12, fill: '#4a5568' }} />
+                <Tooltip formatter={v => [`₹${v.toLocaleString()}`, 'Revenue']} contentStyle={{ borderRadius: 8, border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }} />
+                <Bar dataKey="Revenue" radius={[0,8,8,0]} maxBarSize={28}>
                   {(revenue.package_revenue || []).map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
                 </Bar>
               </BarChart>
@@ -459,7 +565,7 @@ export default function AdminAnalytics() {
       {/* ── FEEDBACK ── */}
       {!loading && tab === 'feedback' && (
         <>
-          <div style={{ display: 'grid', gridTemplateColumns: '200px 1fr', gap: 20, marginBottom: 20 }}>
+          <div style={{ display: 'grid', minWidth: 0, gridTemplateColumns: '200px 1fr', gap: 20, marginBottom: 20 }}>
             <div style={{ background: 'linear-gradient(135deg,#f0a500,#c47d00)', borderRadius: 16, padding: 28, textAlign: 'center', color: 'white', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
               <div style={{ fontSize: 13, opacity: 0.85, marginBottom: 8 }}>Average Rating</div>
               <div style={{ fontSize: 52, fontWeight: 800, lineHeight: 1 }}>{parseFloat(feedback.avg_rating || 0).toFixed(1)}</div>
@@ -480,7 +586,7 @@ export default function AdminAnalytics() {
             </Card>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
+          <div style={{ display: 'grid', minWidth: 0, gridTemplateColumns: '1fr 1fr', gap: 20 }}>
             <Card title="Rating Trend Over Time">
               <ResponsiveContainer width="100%" height={220}>
                 <LineChart data={feedbackTrendData}>
@@ -528,6 +634,7 @@ export default function AdminAnalytics() {
       )}
 
       <style>{`@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}`}</style>
+      </div>
     </Layout>
   );
 }

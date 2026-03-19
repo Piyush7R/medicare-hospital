@@ -5,6 +5,7 @@ const patientNav = [
   { path:'/patient/dashboard',    icon:'🏠', label:'Dashboard' },
   { path:'/patient/appointments', icon:'📅', label:'My Appointments' },
   { path:'/patient/book',         icon:'➕', label:'Book Appointment' },
+  { path:'/patient/track',        icon:'📍', label:'Track My Tests', badge:'LIVE' },
   { path:'/patient/reports',      icon:'📋', label:'My Reports' },
   { path:'/patient/feedback',     icon:'⭐', label:'Feedback' },
   { path:'/patient/profile',      icon:'👤', label:'Profile' },

@@ -9,6 +9,7 @@ import PatientAppointments from './pages/patient/PatientAppointments';
 import BookAppointment     from './pages/patient/BookAppointment';
 import PatientReports      from './pages/patient/PatientReports';
 import PatientFeedback     from './pages/patient/PatientFeedback';
+import QueueTracker        from './pages/patient/QueueTracker';
 
 // Doctor
 import LiveDashboard       from './pages/doctor/LiveDashboard';
@@ -66,6 +67,7 @@ function AppRoutes() {
       <Route path="/patient/book"         element={<ProtectedRoute allowedRoles={['patient']}><BookAppointment /></ProtectedRoute>} />
       <Route path="/patient/reports"      element={<ProtectedRoute allowedRoles={['patient']}><PatientReports /></ProtectedRoute>} />
       <Route path="/patient/feedback"     element={<ProtectedRoute allowedRoles={['patient']}><PatientFeedback /></ProtectedRoute>} />
+      <Route path="/patient/track"        element={<ProtectedRoute allowedRoles={['patient']}><QueueTracker /></ProtectedRoute>} />
       <Route path="/patient/profile"      element={<ProtectedRoute allowedRoles={['patient']}><Profile /></ProtectedRoute>} />
 
       {/* Doctor */}
