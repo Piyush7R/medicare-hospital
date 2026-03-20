@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import api from '../../utils/api';
 import Layout from '../../components/Layout';
 
@@ -19,21 +20,46 @@ function Badge({ status }) {
   );
 }
 
+// Helper function to get local date in YYYY-MM-DD format
+const getLocalDateString = (date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+// Helper function to check if a date string is today
+const isToday = (dateString) => {
+  if (!dateString) return false;
+  const today = getLocalDateString(new Date());
+  const appointmentDate = dateString.split('T')[0];
+  return appointmentDate === today;
+};
+
 export default function DoctorAppointments() {
   const [all, setAll]           = useState([]);
   const [filtered, setFiltered] = useState([]);
   const [loading, setLoading]   = useState(true);
-  const [typeTab, setTypeTab]   = useState('all');       // all | test | consultation
-  const [statusTab, setStatus]  = useState('all');       // all | active | completed | cancelled
+  const [typeTab, setTypeTab]   = useState('all');
+  const [statusTab, setStatus]  = useState('all');
   const [dateFilter, setDate]   = useState('');
   const [search, setSearch]     = useState('');
   const [expanded, setExpanded] = useState(null);
+  const [actionLoading, setActionLoading] = useState(null);
+  const [message, setMessage]   = useState({ text: '', type: '' });
 
-  useEffect(() => {
+  const fetchAppointments = () => {
     api.get('/appointments/all')
       .then(r => { setAll(r.data); })
       .catch(() => {})
       .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    fetchAppointments();
+    // Auto-refresh every 30 seconds
+    const interval = setInterval(fetchAppointments, 30000);
+    return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
@@ -42,7 +68,12 @@ export default function DoctorAppointments() {
     if (statusTab === 'active')    list = list.filter(a => ['checked_in','in_progress','booked'].includes(a.status));
     if (statusTab === 'completed') list = list.filter(a => a.status === 'completed');
     if (statusTab === 'cancelled') list = list.filter(a => a.status === 'cancelled');
-    if (dateFilter) list = list.filter(a => a.appointment_date?.slice(0,10) === dateFilter);
+    if (dateFilter) {
+      list = list.filter(a => {
+        const apptDate = a.appointment_date?.split('T')[0];
+        return apptDate === dateFilter;
+      });
+    }
     if (search.trim()) {
       const q = search.toLowerCase();
       list = list.filter(a =>
@@ -54,8 +85,54 @@ export default function DoctorAppointments() {
     setFiltered(list);
   }, [all, typeTab, statusTab, dateFilter, search]);
 
-  const today     = new Date().toISOString().split('T')[0];
-  const todayList = all.filter(a => a.appointment_date?.slice(0,10) === today);
+  const showMessage = (text, type) => {
+    setMessage({ text, type });
+    setTimeout(() => setMessage({ text: '', type: '' }), 4000);
+  };
+
+  // Check-in patient
+  const handleCheckIn = async (appointment) => {
+    if (!window.confirm(`Check in ${appointment.patient_name}?\n\nToken: ${appointment.token_number}\nPackage: ${appointment.package_name || 'Consultation'}`)) {
+      return;
+    }
+
+    setActionLoading(appointment.id);
+    try {
+      await api.post('/queue/checkin', { appointment_id: appointment.id });
+      showMessage(`✅ ${appointment.patient_name} checked in successfully!`, 'success');
+      fetchAppointments();
+    } catch (err) {
+      showMessage(`❌ ${err.response?.data?.message || 'Check-in failed'}`, 'error');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  // Complete test
+  const handleCompleteTest = async (appointment) => {
+    if (!window.confirm(`Mark ${appointment.patient_name}'s test as completed?\n\nToken: ${appointment.token_number}\nThis will move the patient to the next step.`)) {
+      return;
+    }
+
+    setActionLoading(appointment.id);
+    try {
+      const res = await api.post('/queue/complete-test', { 
+        appointment_id: appointment.id 
+      });
+      showMessage(`✅ ${res.data.message || 'Test completed successfully!'}`, 'success');
+      fetchAppointments();
+    } catch (err) {
+      showMessage(`❌ ${err.response?.data?.message || 'Failed to complete test'}`, 'error');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const today     = getLocalDateString(new Date());
+  const todayList = all.filter(a => {
+    const apptDate = a.appointment_date?.split('T')[0];
+    return apptDate === today;
+  });
   const testCount = all.filter(a => a.appointment_type === 'test').length;
   const consCount = all.filter(a => a.appointment_type === 'consultation').length;
 
@@ -65,17 +142,36 @@ export default function DoctorAppointments() {
       <div style={{ marginBottom: 24 }}>
         <div style={{ fontSize: 13, fontWeight: 600, color: '#0a6e6e', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 4 }}>Doctor Portal</div>
         <h1 style={{ fontSize: 26, fontFamily: "'Playfair Display',serif", color: '#1a202c', margin: '0 0 4px' }}>📅 Appointments</h1>
-        <p style={{ color: '#718096', margin: 0, fontSize: 13 }}>All hospital tests + your consultations</p>
+        <p style={{ color: '#718096', margin: 0, fontSize: 13 }}>All hospital tests + your consultations · Check-in patients & complete tests</p>
       </div>
+
+      {/* Success/Error Messages */}
+      {message.text && (
+        <div style={{ 
+          background: message.type === 'success' ? '#eaf7ef' : '#fff5f5', 
+          border: `2px solid ${message.type === 'success' ? '#2a9d8f' : '#e63946'}`, 
+          borderRadius: 12, 
+          padding: '14px 18px', 
+          marginBottom: 20, 
+          color: message.type === 'success' ? '#1a6e3c' : '#c53030', 
+          fontWeight: 600, 
+          fontSize: 14,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 10
+        }}>
+          {message.text}
+        </div>
+      )}
 
       {/* Summary cards */}
       {!loading && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 14, marginBottom: 24 }}>
           {[
-            { icon: '📋', label: 'Total',          value: all.length,                                          bg: '#eef3ff', color: '#4361ee' },
-            { icon: '📅', label: "Today's",         value: todayList.length,                                    bg: '#fff8e8', color: '#c47d00' },
-            { icon: '🧪', label: 'Tests',           value: testCount,                                           bg: '#e8f5f5', color: '#0a6e6e' },
-            { icon: '👨‍⚕️', label: 'My Consultations', value: consCount,                                        bg: '#f3e8ff', color: '#6b21a8' },
+            { icon: '📋', label: 'Total',          value: all.length,      bg: '#eef3ff', color: '#4361ee' },
+            { icon: '📅', label: "Today's",         value: todayList.length, bg: '#fff8e8', color: '#c47d00' },
+            { icon: '🧪', label: 'Tests',           value: testCount,       bg: '#e8f5f5', color: '#0a6e6e' },
+            { icon: '👨‍⚕️', label: 'My Consultations', value: consCount,    bg: '#f3e8ff', color: '#6b21a8' },
           ].map(s => (
             <div key={s.label} style={{ background: s.bg, borderRadius: 12, padding: '16px 18px', boxShadow: '0 2px 8px rgba(0,0,0,0.04)' }}>
               <div style={{ fontSize: 22, marginBottom: 6 }}>{s.icon}</div>
@@ -152,11 +248,21 @@ export default function DoctorAppointments() {
           {filtered.map(a => {
             const isOpen = expanded === a.id;
             const isConsult = a.appointment_type === 'consultation';
-            const dateObj = new Date(a.appointment_date);
-            const isToday = a.appointment_date?.slice(0,10) === today;
+            const appointmentDateString = a.appointment_date?.split('T')[0];
+            const isTodayAppt = isToday(a.appointment_date);
+            const isProcessing = actionLoading === a.id;
+            
+            // Parse date properly
+            const [year, month, day] = appointmentDateString ? appointmentDateString.split('-') : [0, 0, 0];
+            const dateObj = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
+
+            // Determine what actions are available
+            const canCheckIn = a.status === 'booked' && a.payment_confirmed && isTodayAppt;
+            const canComplete = ['checked_in', 'in_progress'].includes(a.status) && isTodayAppt;
+
             return (
               <div key={a.id}
-                style={{ background: 'white', borderRadius: 14, boxShadow: '0 2px 8px rgba(0,0,0,0.05)', overflow: 'hidden', border: isToday ? '2px solid #0a6e6e33' : '2px solid transparent', transition: 'box-shadow 0.15s' }}>
+                style={{ background: 'white', borderRadius: 14, boxShadow: '0 2px 8px rgba(0,0,0,0.05)', overflow: 'hidden', border: isTodayAppt ? '2px solid #0a6e6e33' : '2px solid transparent', transition: 'box-shadow 0.15s' }}>
 
                 {/* Main row */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '14px 18px', cursor: 'pointer' }}
@@ -177,7 +283,7 @@ export default function DoctorAppointments() {
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                       <span style={{ fontWeight: 700, fontSize: 14, color: '#1a202c' }}>{a.patient_name}</span>
-                      {isToday && <span style={{ background: '#e63946', color: 'white', fontSize: 10, fontWeight: 700, padding: '1px 8px', borderRadius: 10 }}>TODAY</span>}
+                      {isTodayAppt && <span style={{ background: '#e63946', color: 'white', fontSize: 10, fontWeight: 700, padding: '1px 8px', borderRadius: 10 }}>TODAY</span>}
                     </div>
                     <div style={{ fontSize: 12, color: '#718096', marginTop: 2 }}>
                       {isConsult
@@ -192,12 +298,56 @@ export default function DoctorAppointments() {
                     )}
                   </div>
 
-                  {/* Right side */}
+                  {/* Right side - Status & Actions */}
                   <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6, flexShrink: 0 }}>
                     <Badge status={a.status} />
                     <div style={{ fontSize: 11, color: a.payment_confirmed ? '#2a9d8f' : '#c47d00', fontWeight: 600 }}>
                       {a.payment_confirmed ? `✅ ₹${a.payment_amount}` : '⏳ Pending payment'}
                     </div>
+                    
+                    {/* Action buttons */}
+                    {(canCheckIn || canComplete) && (
+                      <div style={{ display: 'flex', gap: 6, marginTop: 4 }} onClick={(e) => e.stopPropagation()}>
+                        {canCheckIn && (
+                          <button
+                            onClick={() => handleCheckIn(a)}
+                            disabled={isProcessing}
+                            style={{
+                              padding: '5px 12px',
+                              background: isProcessing ? '#a0aec0' : 'linear-gradient(135deg, #4361ee, #2945cc)',
+                              color: 'white',
+                              border: 'none',
+                              borderRadius: 8,
+                              fontSize: 12,
+                              fontWeight: 700,
+                              cursor: isProcessing ? 'not-allowed' : 'pointer',
+                              whiteSpace: 'nowrap'
+                            }}
+                          >
+                            {isProcessing ? '...' : '✓ Check In'}
+                          </button>
+                        )}
+                        {canComplete && (
+                          <button
+                            onClick={() => handleCompleteTest(a)}
+                            disabled={isProcessing}
+                            style={{
+                              padding: '5px 12px',
+                              background: isProcessing ? '#a0aec0' : 'linear-gradient(135deg, #2a9d8f, #0a6e6e)',
+                              color: 'white',
+                              border: 'none',
+                              borderRadius: 8,
+                              fontSize: 12,
+                              fontWeight: 700,
+                              cursor: isProcessing ? 'not-allowed' : 'pointer',
+                              whiteSpace: 'nowrap'
+                            }}
+                          >
+                            {isProcessing ? '...' : '✅ Complete'}
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   <span style={{ color: '#a0aec0', fontSize: 16, marginLeft: 4 }}>{isOpen ? '▲' : '▼'}</span>
@@ -212,7 +362,7 @@ export default function DoctorAppointments() {
                       ['🩸 Blood Group',  a.blood_group || '—'],
                       ['🎂 Age / Gender', a.age ? `${a.age} yrs · ${a.gender || '—'}` : '—'],
                       ['💳 Payment',      a.payment_mode?.toUpperCase() || 'Cash'],
-                      ['📅 Date',         new Date(a.appointment_date).toLocaleDateString('en-IN', { weekday:'short', day:'2-digit', month:'short', year:'numeric' })],
+                      ['📅 Date',         `${dateObj.toLocaleDateString('en-IN', { weekday:'short', day:'2-digit', month:'short', year:'numeric' })}${isTodayAppt ? ' (TODAY)' : ''}`],
                       ...(isConsult
                         ? [['🏥 Specialization', a.specialization || '—']]
                         : [['🏠 Test Room', a.test_room_number || '—']]),
@@ -242,6 +392,7 @@ export default function DoctorAppointments() {
       {!loading && (
         <div style={{ marginTop: 16, fontSize: 12, color: '#a0aec0', textAlign: 'center' }}>
           Showing {filtered.length} of {all.length} appointment{all.length !== 1 ? 's' : ''}
+          {' · Auto-refreshes every 30 seconds'}
         </div>
       )}
     </Layout>

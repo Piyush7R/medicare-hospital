@@ -1,252 +1,338 @@
 const db = require('../config/db');
 
-// Get queue status for a patient's appointment
+// ── Get patient queue for a specific patient ───────────────────────────────────
 const getPatientQueue = async (req, res) => {
   const patient_id = req.user.id;
   try {
-    const [appointments] = await db.query(
-      `SELECT a.*, tp.name as package_name 
-       FROM appointments a 
-       LEFT JOIN test_packages tp ON a.test_package_id = tp.id
-       WHERE a.patient_id = ? AND a.appointment_date = CURDATE() 
-       AND a.status IN ('checked_in','in_progress')
-       ORDER BY a.appointment_date DESC LIMIT 1`,
+    const [rows] = await db.query(
+      `SELECT 
+        q.*,
+        tr.name as room_name,
+        a.token_number,
+        a.appointment_date,
+        pt.status as test_status
+       FROM queue q
+       JOIN test_rooms tr ON q.room_id = tr.id
+       JOIN appointments a ON q.appointment_id = a.id
+       LEFT JOIN patient_tests pt ON q.appointment_id = pt.appointment_id AND q.room_id = pt.room_id
+       WHERE a.patient_id = ?
+       ORDER BY q.created_at DESC
+       LIMIT 1`,
       [patient_id]
     );
-    if (appointments.length === 0)
-      return res.json({ active: false, message: 'No active appointment today' });
-
-    const appt = appointments[0];
-
-    // Get patient tests workflow
-    const [tests] = await db.query(
-      `SELECT pt.*, tr.name as room_name, tr.test_type
-       FROM patient_tests pt
-       LEFT JOIN test_rooms tr ON pt.room_id = tr.id
-       WHERE pt.appointment_id = ?
-       ORDER BY pt.sequence_order`,
-      [appt.id]
-    );
-
-    // Queue position in current room
-    const currentTest = tests.find(t => t.status === 'in_queue' || t.status === 'in_progress');
-    let queuePosition = null;
-    if (currentTest) {
-      const [ahead] = await db.query(
-        `SELECT COUNT(*) as count FROM queue q
-         JOIN appointments a ON q.appointment_id = a.id
-         WHERE q.room_id = ? AND q.status = 'waiting' AND a.appointment_time < ?`,
-        [currentTest.room_id, appt.appointment_time]
-      );
-      queuePosition = (ahead[0].count || 0) + 1;
-    }
-
-    res.json({
-      active: true,
-      appointment: appt,
-      tests,
-      currentTest,
-      queuePosition,
-    });
+    res.json(rows[0] || null);
   } catch (err) {
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 };
 
-// Check in patient (generate test workflow)
+// ── Get queue for a specific room ──────────────────────────────────────────────
+const getRoomQueue = async (req, res) => {
+  const { room_id } = req.params;
+  try {
+    // Get current patient (in_progress)
+    const [current] = await db.query(
+      `SELECT 
+        q.id as queue_id,
+        q.appointment_id,
+        q.position,
+        q.status as queue_status,
+        a.token_number,
+        a.test_package_id,
+        u.name as patient_name,
+        u.phone as patient_phone,
+        p.age,
+        p.gender,
+        p.blood_group,
+        tp.name as package_name,
+        pt.status as test_status,
+        pt.id as patient_test_id,
+        pt.sequence_order,
+        tr.name as room_name,
+        tr.test_type
+       FROM queue q
+       JOIN appointments a ON q.appointment_id = a.id
+       JOIN users u ON a.patient_id = u.id
+       LEFT JOIN patients p ON u.id = p.user_id
+       LEFT JOIN test_packages tp ON a.test_package_id = tp.id
+       LEFT JOIN patient_tests pt ON q.appointment_id = pt.appointment_id AND q.room_id = pt.room_id
+       LEFT JOIN test_rooms tr ON q.room_id = tr.id
+       WHERE q.room_id = ? AND q.status = 'in_progress'
+       ORDER BY q.position
+       LIMIT 1`,
+      [room_id]
+    );
+
+    // Get waiting queue - ONLY patients whose CURRENT test is in this room
+    const [waiting] = await db.query(
+      `SELECT 
+        q.id as queue_id,
+        q.appointment_id,
+        q.position,
+        q.status as queue_status,
+        a.token_number,
+        a.test_package_id,
+        u.name as patient_name,
+        u.phone as patient_phone,
+        p.age,
+        p.gender,
+        p.blood_group,
+        tp.name as package_name,
+        pt.status as test_status,
+        pt.id as patient_test_id,
+        pt.sequence_order,
+        tr.name as room_name,
+        tr.test_type
+       FROM queue q
+       JOIN appointments a ON q.appointment_id = a.id
+       JOIN users u ON a.patient_id = u.id
+       LEFT JOIN patients p ON u.id = p.user_id
+       LEFT JOIN test_packages tp ON a.test_package_id = tp.id
+       LEFT JOIN patient_tests pt ON q.appointment_id = pt.appointment_id AND q.room_id = pt.room_id
+       LEFT JOIN test_rooms tr ON q.room_id = tr.id
+       WHERE q.room_id = ? 
+         AND q.status = 'waiting'
+         AND pt.status IN ('in_queue', 'in_progress')
+       ORDER BY q.position`,
+      [room_id]
+    );
+
+    res.json({
+      current: current[0] || null,
+      waiting: waiting
+    });
+  } catch (err) {
+    console.error('Get room queue error:', err);
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+};
+
+// ── Get all rooms with queue counts ────────────────────────────────────────────
+const getAllRoomsQueue = async (req, res) => {
+  try {
+    const [rooms] = await db.query(
+      `SELECT 
+        tr.id as room_id,
+        tr.name as room_name,
+        tr.test_type,
+        COUNT(CASE WHEN q.status = 'waiting' AND pt.status IN ('in_queue', 'in_progress') THEN 1 END) as waiting_count,
+        COUNT(CASE WHEN q.status = 'in_progress' THEN 1 END) as in_progress_count
+       FROM test_rooms tr
+       LEFT JOIN queue q ON tr.id = q.room_id AND q.status IN ('waiting', 'in_progress')
+       LEFT JOIN patient_tests pt ON q.appointment_id = pt.appointment_id AND q.room_id = pt.room_id
+       WHERE tr.status = 'active'
+       GROUP BY tr.id, tr.name, tr.test_type
+       ORDER BY tr.id`
+    );
+    res.json(rooms);
+  } catch (err) {
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+};
+
+// ── Check in patient (move to in_queue status) ─────────────────────────────────
 const checkInPatient = async (req, res) => {
   const { appointment_id } = req.body;
   try {
-    // Get appointment
-    const [appts] = await db.query('SELECT * FROM appointments WHERE id = ?', [appointment_id]);
-    if (appts.length === 0) return res.status(404).json({ message: 'Appointment not found' });
+    await db.query('START TRANSACTION');
 
-    // Get test package rooms
-    const [pkg] = await db.query('SELECT * FROM test_packages WHERE id = ?', [appts[0].test_package_id]);
+    // Update appointment status
+    await db.query(
+      `UPDATE appointments SET status = 'checked_in' WHERE id = ?`,
+      [appointment_id]
+    );
 
-    // Get all active rooms for workflow
-    const [rooms] = await db.query('SELECT * FROM test_rooms WHERE status = "active" ORDER BY id');
+    // Get first test and mark as in_queue
+    const [firstTest] = await db.query(
+      `SELECT pt.*, tr.name as room_name 
+       FROM patient_tests pt
+       LEFT JOIN test_rooms tr ON pt.room_id = tr.id
+       WHERE pt.appointment_id = ? AND pt.sequence_order = 1`,
+      [appointment_id]
+    );
 
-    // Assign rooms based on package (simplified: assign first N rooms)
-    let roomsToAssign = rooms.slice(0, 3); // default 3 rooms
-    if (pkg[0]?.name?.includes('Blood')) roomsToAssign = rooms.slice(0, 1);
-    if (pkg[0]?.name?.includes('Cardiac')) roomsToAssign = [rooms[0], rooms[1]];
-    if (pkg[0]?.name?.includes('Full')) roomsToAssign = rooms.slice(0, 4);
-
-    // Clear existing tests
-    await db.query('DELETE FROM patient_tests WHERE appointment_id = ?', [appointment_id]);
-
-    // Create test workflow
-    for (let i = 0; i < roomsToAssign.length; i++) {
-      const status = i === 0 ? 'in_queue' : 'pending';
+    if (firstTest.length > 0) {
       await db.query(
-        'INSERT INTO patient_tests (appointment_id, room_id, status, sequence_order) VALUES (?, ?, ?, ?)',
-        [appointment_id, roomsToAssign[i].id, status, i + 1]
+        `UPDATE patient_tests SET status = 'in_queue' WHERE id = ?`,
+        [firstTest[0].id]
       );
-      // Add to queue for first room
-      if (i === 0) {
-        const [queueCount] = await db.query(
-          'SELECT COUNT(*) as count FROM queue WHERE room_id = ? AND status = "waiting"',
-          [roomsToAssign[i].id]
+
+      // Add to queue if not already there
+      const [existingQueue] = await db.query(
+        `SELECT id FROM queue WHERE appointment_id = ? AND room_id = ?`,
+        [appointment_id, firstTest[0].room_id]
+      );
+
+      if (existingQueue.length === 0) {
+        const [[{ max_pos }]] = await db.query(
+          `SELECT COALESCE(MAX(position), 0) as max_pos FROM queue WHERE room_id = ?`,
+          [firstTest[0].room_id]
         );
+
         await db.query(
-          'INSERT INTO queue (appointment_id, room_id, position, status) VALUES (?, ?, ?, ?)',
-          [appointment_id, roomsToAssign[i].id, (queueCount[0].count || 0) + 1, 'waiting']
+          `INSERT INTO queue (appointment_id, room_id, position, status) VALUES (?, ?, ?, 'waiting')`,
+          [appointment_id, firstTest[0].room_id, max_pos + 1]
         );
       }
     }
 
-    // Update appointment status
-    await db.query('UPDATE appointments SET status = "checked_in" WHERE id = ?', [appointment_id]);
-
-    // Notify patient
-    await db.query(
-      'INSERT INTO notifications (user_id, title, message, type) VALUES (?, ?, ?, ?)',
-      [appts[0].patient_id, 'Checked In Successfully', `You have been checked in. Please proceed to Room 1 - Blood Collection. Your tests will begin shortly.`, 'queue']
-    );
-
-    res.json({ message: 'Patient checked in and workflow created', rooms: roomsToAssign.length });
+    await db.query('COMMIT');
+    res.json({ message: 'Patient checked in successfully' });
   } catch (err) {
+    await db.query('ROLLBACK');
+    console.error('Check-in error:', err);
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 };
 
-// Complete a test and move patient to next room
+// ── Complete current test and move to next ─────────────────────────────────────
+// ── Complete current test and move to next ─────────────────────────────────────
 const completeTest = async (req, res) => {
-  const { patient_test_id } = req.body;
+  const { appointment_id, patient_test_id } = req.body;
+  
   try {
-    // Mark current test complete
+    await db.query('START TRANSACTION');
+
+    let currentTest;
+    
+    if (patient_test_id) {
+      const [tests] = await db.query('SELECT * FROM patient_tests WHERE id = ?', [patient_test_id]);
+      currentTest = tests[0];
+    } else if (appointment_id) {
+      const [tests] = await db.query(
+        `SELECT * FROM patient_tests 
+         WHERE appointment_id = ? AND status IN ('in_progress', 'in_queue') 
+         ORDER BY sequence_order LIMIT 1`,
+        [appointment_id]
+      );
+      currentTest = tests[0];
+    }
+
+    if (!currentTest) {
+      await db.query('ROLLBACK');
+      return res.status(404).json({ message: 'No active test found for this appointment' });
+    }
+
+    // Mark current test as completed
     await db.query(
-      'UPDATE patient_tests SET status = "completed", completed_at = NOW() WHERE id = ?',
-      [patient_test_id]
+      `UPDATE patient_tests SET status = 'completed', completed_at = NOW() WHERE id = ?`,
+      [currentTest.id]
     );
 
-    // Get the test details
-    const [tests] = await db.query('SELECT * FROM patient_tests WHERE id = ?', [patient_test_id]);
-    const test = tests[0];
+    // Mark current queue entry as completed
+    await db.query(
+      `UPDATE queue SET status = 'completed' WHERE appointment_id = ? AND room_id = ?`,
+      [currentTest.appointment_id, currentTest.room_id]
+    );
 
-    // Get next test in sequence
+    // Find next test
     const [nextTests] = await db.query(
-      'SELECT pt.*, tr.name as room_name FROM patient_tests pt JOIN test_rooms tr ON pt.room_id = tr.id WHERE pt.appointment_id = ? AND pt.sequence_order = ? AND pt.status = "pending"',
-      [test.appointment_id, test.sequence_order + 1]
+      `SELECT pt.*, tr.name as room_name 
+       FROM patient_tests pt
+       LEFT JOIN test_rooms tr ON pt.room_id = tr.id
+       WHERE pt.appointment_id = ? AND pt.sequence_order > ? AND pt.status = 'pending'
+       ORDER BY pt.sequence_order LIMIT 1`,
+      [currentTest.appointment_id, currentTest.sequence_order]
     );
-
-    // Update queue
-    await db.query('UPDATE queue SET status = "completed" WHERE appointment_id = ? AND room_id = ?', [test.appointment_id, test.room_id]);
 
     if (nextTests.length > 0) {
-      // Move to next room
-      await db.query('UPDATE patient_tests SET status = "in_queue" WHERE id = ?', [nextTests[0].id]);
+      const nextTest = nextTests[0];
 
-      // Add to queue for next room
-      const [queueCount] = await db.query(
-        'SELECT COUNT(*) as count FROM queue WHERE room_id = ? AND status = "waiting"',
-        [nextTests[0].room_id]
-      );
+      // Mark next test as in_queue
       await db.query(
-        'INSERT INTO queue (appointment_id, room_id, position, status) VALUES (?, ?, ?, ?)',
-        [test.appointment_id, nextTests[0].room_id, (queueCount[0].count || 0) + 1, 'waiting']
+        `UPDATE patient_tests SET status = 'in_queue' WHERE id = ?`,
+        [nextTest.id]
       );
 
-      // Get patient and notify
-      const [appt] = await db.query('SELECT patient_id FROM appointments WHERE id = ?', [test.appointment_id]);
+      // ✅ CHECK if queue entry already exists before inserting
+      const [existingQueue] = await db.query(
+        `SELECT id FROM queue WHERE appointment_id = ? AND room_id = ? AND status != 'completed'`,
+        [currentTest.appointment_id, nextTest.room_id]
+      );
+
+      if (existingQueue.length === 0) {
+        // Only insert if no existing queue entry
+        const [[{ max_pos }]] = await db.query(
+          `SELECT COALESCE(MAX(position), 0) as max_pos FROM queue WHERE room_id = ? AND status != 'completed'`,
+          [nextTest.room_id]
+        );
+
+        await db.query(
+          `INSERT INTO queue (appointment_id, room_id, position, status) VALUES (?, ?, ?, 'waiting')`,
+          [currentTest.appointment_id, nextTest.room_id, max_pos + 1]
+        );
+      }
+
+      // Update appointment status
       await db.query(
-        'INSERT INTO notifications (user_id, title, message, type) VALUES (?, ?, ?, ?)',
-        [appt[0].patient_id, 'Proceed to Next Room', `Please proceed to ${nextTests[0].room_name}. You are in the queue.`, 'queue']
+        `UPDATE appointments SET status = 'in_progress' WHERE id = ?`,
+        [currentTest.appointment_id]
       );
 
-      // Update appointment to in_progress
-      await db.query('UPDATE appointments SET status = "in_progress" WHERE id = ?', [test.appointment_id]);
+      // Notify patient
+      const [apps] = await db.query('SELECT patient_id FROM appointments WHERE id = ?', [currentTest.appointment_id]);
+      await db.query(
+        `INSERT INTO notifications (user_id, title, message, type) VALUES (?, ?, ?, ?)`,
+        [
+          apps[0].patient_id,
+          'Next Test Ready 🔔',
+          `Please proceed to ${nextTest.room_name} for your next test.`,
+          'appointment'
+        ]
+      );
 
-      res.json({ message: 'Test completed, patient moved to next room', nextRoom: nextTests[0].room_name });
+      await db.query('COMMIT');
+      res.json({ message: `Test completed. Patient moved to ${nextTest.room_name}` });
     } else {
-      // All tests done
-      const [appt] = await db.query('SELECT patient_id FROM appointments WHERE id = ?', [test.appointment_id]);
-      await db.query('UPDATE appointments SET status = "completed" WHERE id = ?', [test.appointment_id]);
+      // All tests completed
       await db.query(
-        'INSERT INTO notifications (user_id, title, message, type) VALUES (?, ?, ?, ?)',
-        [appt[0].patient_id, 'All Tests Completed!', 'All your tests are done. Your report will be available soon. You may leave the hospital.', 'queue']
+        `UPDATE appointments SET status = 'completed' WHERE id = ?`,
+        [currentTest.appointment_id]
       );
-      res.json({ message: 'All tests completed!', allDone: true });
+
+      const [apps] = await db.query('SELECT patient_id FROM appointments WHERE id = ?', [currentTest.appointment_id]);
+      await db.query(
+        `INSERT INTO notifications (user_id, title, message, type) VALUES (?, ?, ?, ?)`,
+        [
+          apps[0].patient_id,
+          'All Tests Completed ✅',
+          'All your tests are complete. Your report will be available soon.',
+          'appointment'
+        ]
+      );
+
+      await db.query('COMMIT');
+      res.json({ message: 'All tests completed successfully!' });
     }
   } catch (err) {
+    await db.query('ROLLBACK');
+    console.error('Complete test error:', err);
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 };
 
-// Get live queue for a room (doctor/staff view)
-const getRoomQueue = async (req, res) => {
-  const { room_id } = req.params;
-  try {
-    const [queue] = await db.query(
-      `SELECT q.*, u.name as patient_name, a.token_number, a.appointment_time, tp.name as package_name
-       FROM queue q
-       JOIN appointments a ON q.appointment_id = a.id
-       JOIN users u ON a.patient_id = u.id
-       LEFT JOIN test_packages tp ON a.test_package_id = tp.id
-       WHERE q.room_id = ? AND q.status = 'waiting'
-       ORDER BY q.position ASC`,
-      [room_id]
-    );
-    const [room] = await db.query('SELECT * FROM test_rooms WHERE id = ?', [room_id]);
-    res.json({ room: room[0], queue });
-  } catch (err) {
-    res.status(500).json({ message: 'Server error', error: err.message });
-  }
-};
-
-// Get all rooms queue summary
-const getAllRoomsQueue = async (req, res) => {
-  try {
-    const [rooms] = await db.query('SELECT * FROM test_rooms WHERE status = "active"');
-    const summary = [];
-    for (const room of rooms) {
-      const [waiting] = await db.query(
-        'SELECT COUNT(*) as count FROM queue WHERE room_id = ? AND status = "waiting"', [room.id]
-      );
-      const [inProgress] = await db.query(
-        'SELECT COUNT(*) as count FROM patient_tests WHERE room_id = ? AND status = "in_progress"', [room.id]
-      );
-      summary.push({
-        ...room,
-        waiting_count: waiting[0].count,
-        in_progress_count: inProgress[0].count,
-        current_occupancy: waiting[0].count + inProgress[0].count,
-      });
-    }
-    res.json(summary);
-  } catch (err) {
-    res.status(500).json({ message: 'Server error', error: err.message });
-  }
-};
-
-// Get today's live stats for doctor dashboard
+// ── Get live statistics ─────────────────────────────────────────────────────────
 const getLiveStats = async (req, res) => {
   try {
-    const today = new Date().toISOString().split('T')[0];
-    const [[{ in_hospital }]] = await db.query(
-      `SELECT COUNT(*) as in_hospital FROM appointments WHERE appointment_date = ? AND status IN ('checked_in','in_progress')`, [today]
-    );
-    const [[{ completed_today }]] = await db.query(
-      `SELECT COUNT(*) as completed_today FROM appointments WHERE appointment_date = ? AND status = 'completed'`, [today]
-    );
-    const [[{ total_today }]] = await db.query(
-      `SELECT COUNT(*) as total_today FROM appointments WHERE appointment_date = ? AND status != 'cancelled'`, [today]
-    );
-    const [[{ pending_checkin }]] = await db.query(
-      `SELECT COUNT(*) as pending_checkin FROM appointments WHERE appointment_date = ? AND status = 'booked'`, [today]
-    );
-    const [rooms] = await db.query('SELECT * FROM test_rooms WHERE status = "active"');
-    const roomStats = [];
-    for (const room of rooms) {
-      const [waiting] = await db.query('SELECT COUNT(*) as count FROM queue WHERE room_id = ? AND status = "waiting"', [room.id]);
-      const [done] = await db.query('SELECT COUNT(*) as count FROM patient_tests WHERE room_id = ? AND status = "completed"', [room.id]);
-      roomStats.push({ ...room, waiting: waiting[0].count, completed: done[0].count });
-    }
-    res.json({ in_hospital, completed_today, total_today, pending_checkin, rooms: roomStats });
+    const [[stats]] = await db.query(`
+      SELECT 
+        COUNT(CASE WHEN q.status = 'waiting' THEN 1 END) as total_waiting,
+        COUNT(CASE WHEN q.status = 'in_progress' THEN 1 END) as total_in_progress,
+        COUNT(DISTINCT q.appointment_id) as total_patients
+      FROM queue q
+      WHERE q.status IN ('waiting', 'in_progress')
+    `);
+    res.json(stats);
   } catch (err) {
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 };
 
-module.exports = { getPatientQueue, checkInPatient, completeTest, getRoomQueue, getAllRoomsQueue, getLiveStats };
+module.exports = {
+  getPatientQueue,
+  getRoomQueue,
+  getAllRoomsQueue,
+  checkInPatient,
+  completeTest,
+  getLiveStats,
+};
